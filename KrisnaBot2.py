@@ -1,104 +1,160 @@
 import os
 import telebot
-import sqlite3
+import MySQLdb
+# import mysql.connector
+from telebot import types
 from datetime import datetime
 from dotenv import load_dotenv
-
+import time
 load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Function to connect to the SQLite database
-def connect_to_db():
-    return sqlite3.connect('telegram_bot.db')  # SQLite database file name
+def connect_db():
+    return MySQLdb.connect(
+        host="localhost", 
+        user="root", 
+        password="", 
+        database="db_botKrisna", 
+        port=3306)
 
-# Create tables if they don't exist
-def create_tables():
-    conn = connect_to_db()
+
+def inbox(username, message, date):
+    conn = connect_db()
     cursor = conn.cursor()
-    # Create inbox table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS inbox (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            username TEXT NOT NULL,
-            message_date TIMESTAMP NOT NULL,
-            message_text TEXT NOT NULL
-        )
-    ''')
-    # Create outbox table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS outbox (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            message_text TEXT NOT NULL,
-            sent_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # Create preset_messages table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS preset_messages (
-            id INTEGER PRIMARY KEY,
-            input_message TEXT NOT NULL,
-            output_message TEXT NOT NULL
-        )
-    ''')
+    cursor.execute("INSERT INTO inbox (username, message, date) VALUES (%s, %s, %s)", (username,  message, date))
     conn.commit()
     conn.close()
 
-# Function to insert incoming message to inbox table
-def insert_inbox_message(user_id, username, message_date, message_text):
-    conn = connect_to_db()
+def outbox(username, message, date):
+    conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO inbox (user_id, username, message_date, message_text) VALUES (?, ?, ?, ?)",
-                   (user_id, username, message_date, message_text))
+    cursor.execute("INSERT INTO outbox (username, message, date) VALUES (%s, %s, %s)", (username,  message, date))
     conn.commit()
     conn.close()
 
-# Function to insert outgoing message to outbox table
-def insert_outbox_message(user_id, message_text):
-    conn = connect_to_db()
+def get_mahasiswa_by_nim(nim):
+    conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO outbox (user_id, message_text) VALUES (?, ?)", (user_id, message_text))
-    conn.commit()
+    cursor.execute("SELECT * FROM mahasiswa WHERE nim = %s", (nim,))
+    mahasiswa = cursor.fetchone()
     conn.close()
+    return mahasiswa
 
-# Function to retrieve preset response from preset_messages table
-def get_preset_response(input_message):
-    conn = connect_to_db()
+def get_matkul_by_name(matkul_name):
+    conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT output_message FROM preset_messages WHERE input_message = ?", (input_message,))
-    result = cursor.fetchone()
+    cursor.execute("SELECT * FROM matkul WHERE nama LIKE %s", ('%' + matkul_name + '%',))
+    matkul = cursor.fetchall()
     conn.close()
-    if result:
-        return result[0]
+    return matkul
+
+# Tambahkan tumpukan global untuk menyimpan menu sebelumnya
+menu_stack = []
+
+@bot.message_handler(commands=['cari_mhs'])
+def cari_mahasiswa(m):
+    answer = "Masukkan NIM mahasiswa yang ingin Anda cari:"
+    bot.send_message(m.chat.id, answer)
+    username = m.from_user.username
+    message = m.text
+    date = datetime.now()
+    inbox(username, message, date)
+    outbox(username, answer, date)
+    
+    # Tambahkan menu sebelumnya ke tumpukan
+    menu_stack.append(handle_show_menu)
+    
+    bot.register_next_step_handler(m, process_nim_input)
+
+def process_nim_input(m):
+    nim = m.text
+    mahasiswa = get_mahasiswa_by_nim(nim)
+    if mahasiswa:
+        info_mahasiswa = f"NIM: {mahasiswa[0]}\nNama: {mahasiswa[1]}"
+        bot.send_message(m.chat.id, info_mahasiswa)
     else:
-        return None
+        bot.send_message(m.chat.id, "Maaf, mahasiswa dengan NIM tersebut tidak ditemukan.")
 
-# Handler for messages other than commands
+@bot.message_handler(commands=['cari_matkul'])
+def cari_matkul(m):
+    answer = "Masukkan nama mata kuliah yang ingin Anda cari:"
+    bot.send_message(m.chat.id, answer)
+    username = m.from_user.username
+    message = m.text
+    date = datetime.now()
+    inbox(username, message, date)
+    outbox(username, answer, date)
+    
+    # Tambahkan menu sebelumnya ke tumpukan
+    menu_stack.append(handle_show_menu)
+    
+    bot.register_next_step_handler(m, process_matkul_name_input)
+
+@bot.message_handler(commands=['back'])
+def back_to_previous_menu(m):
+    if menu_stack:
+        previous_menu = menu_stack.pop()
+        previous_menu(m)
+    else:
+        bot.send_message(m.chat.id, "Anda sudah berada di menu awal.")
+
+@bot.message_handler(commands=['start', 'hello'])
+def start(m):
+    answer ="Hello what can i do for you?, type /show_menu"
+    bot.send_message(m.chat.id, answer)
+    username = m.from_user.username
+    message = m.text
+    date = datetime.now()
+    inbox(username, message, date)
+    outbox(username, answer, date)
+
+@bot.message_handler(commands=['show_menu'])
+def handle_show_menu(m):
+    show_menu(m)
+    
+    # Tambahkan menu sebelumnya ke tumpukan
+    menu_stack.append(handle_show_menu)
+
 @bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    message_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    message_text = message.text
+def handle_menu(m):
+    option = m.text
+    data = get_data_from_database(option, m)
+    if data is not None:
+        bot.send_message(m.chat.id, data)
 
-    # Check if message is empty
-    if not message_text:
-        response = "Maaf, tidak ada pesan yang ditulis. Silakan tulis pesan yang ingin Anda sampaikan."
+def show_menu(m):
+    options = get_menu_options()
+    markup = types.ReplyKeyboardMarkup(row_width=1)
+    for option in options:
+        option_text = str(option[1]) 
+        markup.add(types.KeyboardButton(option_text)) 
+    bot.send_message(m.chat.id, "Pilih salah satu menu:", reply_markup=markup)
+    username = m.from_user.username
+    message = m.text
+    date = datetime.now()
+    inbox(username, message, date)
+    outbox(username, "Show menu", date)
+
+
+def get_menu_options():
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM menu_options")
+    options = cursor.fetchall()
+    conn.close()
+    return options
+
+def get_data_from_database(option, m):
+    if option == "cari_mhs":
+        cari_mahasiswa(m)
+        return None
+    elif option == "cari_matkul":
+        cari_matkul(m)
+        return None
     else:
-        # Check if the message matches any preset messages
-        preset_response = get_preset_response(message_text)
-        if preset_response:
-            response = preset_response
-        else:
-            response = "Pesan Anda telah diterima dan akan segera diproses."
+        return "Maaf, perintah tidak dikenali."
 
-    bot.reply_to(message, response)
-    insert_inbox_message(user_id, username, message_date, message_text)
-    insert_outbox_message(user_id, response)
-
-# Polling the bot
 bot.polling()

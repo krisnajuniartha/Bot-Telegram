@@ -1,8 +1,11 @@
 import os
 import telebot
-import sqlite3
+import MySQLdb
+# import mysql.connector
+from telebot import types
 from datetime import datetime
 from dotenv import load_dotenv
+import time
 load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -10,117 +13,136 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
 
-def connect_to_db():
-    return sqlite3.connect('telegram_bot.db') 
+def connect_db():
+    return MySQLdb.connect(
+        host="localhost", 
+        user="root", 
+        password="", 
+        database="db_botKrisna", 
+        port=3306)
 
 
-conn = connect_to_db()
-cursor = conn.cursor()
-
-# # Contoh membuat tabel
-cursor.execute('''
-        CREATE TABLE IF NOT EXISTS inbox (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            username TEXT NOT NULL,
-            message_date TEXT NOT NULL,
-            message_text TEXT NOT NULL,
-            pesan TEXT NOT NULL  
-        )
-    ''')
-
-cursor.execute('''
-        CREATE TABLE IF NOT EXISTS outbox (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            message_text TEXT NOT NULL,
-            sent_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-
-conn.commit()
-conn.close()
-
-# Function to connect to the SQLite database
-def connect_to_db():
-    return sqlite3.connect('telegram_bot.db')  # SQLite database file name
-
-# Function to insert incoming message to inbox table
-def insert_inbox_message(user_id, username, message_date, message_text, pesan):
-    conn = connect_to_db()
+def inbox(username, message, date):
+    conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO inbox (user_id, username, message_date, message_text, pesan) VALUES (?, ?, ?, ?, ?)",
-                   (user_id, username, message_date, message_text, pesan))
+    cursor.execute("INSERT INTO inbox (username, message, date) VALUES (%s, %s, %s)", (username,  message, date))
     conn.commit()
     conn.close()
 
-# Function to insert outgoing message to outbox table
-def insert_outbox_message(user_id, message_text):
-    conn = connect_to_db()
+def outbox(username, message, date):
+    conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO outbox (user_id, message_text) VALUES (?, ?)", (user_id, message_text))
+    cursor.execute("INSERT INTO outbox (username, message, date) VALUES (%s, %s, %s)", (username,  message, date))
     conn.commit()
     conn.close()
 
- 
-# Handler for '/help' command
-@bot.message_handler(commands=['help'])
-def help(message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    message_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    help_text = "Anda dapat menggunakan perintah berikut:\n" \
-                "/start - Memulai percakapan\n" \
-                "/help - Menampilkan bantuan\n" \
-                "Pesan apa pun selain perintah di atas akan dianggap sebagai pesan yang akan diproses oleh bot."
+def get_mahasiswa_by_nim(nim):
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM mahasiswa WHERE nim = %s", (nim,))
+    mahasiswa = cursor.fetchone()
+    conn.close()
+    return mahasiswa
 
-    bot.reply_to(message, help_text)
-    insert_inbox_message(user_id, username, message_date, '/help', help_text)
-    insert_outbox_message(user_id, help_text)
+def get_matkul_by_name(matkul_name):
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM matkul WHERE nama LIKE %s", ('%' + matkul_name + '%',))
+    matkul = cursor.fetchall()
+    conn.close()
+    return matkul
 
-# Handler for '/start' command
-@bot.message_handler(commands=['start'])
-def start(message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    message_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    message_text = "Halo! Selamat datang di bot ini. Silakan mulai dengan mengetikkan pesan apa yang ingin Anda sampaikan."
-    pesan = message.text  # Get the user's message
-    bot.reply_to(message, message_text)
-    insert_inbox_message(user_id, username, message_date, message_text, pesan)
-    insert_outbox_message(user_id, message_text)
+@bot.message_handler(commands=['cari_mhs'])
+def cari_mahasiswa(m):
+    answer = "Masukkan NIM mahasiswa yang ingin Anda cari:"
+    bot.send_message(m.chat.id, answer)
+    username = m.from_user.username
+    message = m.text
+    date = datetime.now()
+    inbox(username, message, date)
+    outbox(username, answer, date)
+    bot.register_next_step_handler(m, process_nim_input)
 
-# Handler for messages other than commands
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    message_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    message_text = message.text
-
-    # Check if message is empty
-    if not message_text:
-        response = "Maaf, tidak ada pesan yang ditulis. Silakan tulis pesan yang ingin Anda sampaikan."
+def process_nim_input(m):
+    nim = m.text
+    mahasiswa = get_mahasiswa_by_nim(nim)
+    if mahasiswa:
+        info_mahasiswa = f"NIM: {mahasiswa[0]}\nNama: {mahasiswa[1]}"
+        bot.send_message(m.chat.id, info_mahasiswa)
     else:
-        # Custom responses based on user input
-        if message_text.lower() == "hai":
-            response = "Hai juga! Ada yang bisa saya bantu?"
-        elif message_text.lower() == "terima kasih":
-            response = "Sama-sama, senang bisa membantu!"
-        else:
-            response = "Pesan Anda telah diterima dan akan segera diproses."
+        bot.send_message(m.chat.id, "Maaf, mahasiswa dengan NIM tersebut tidak ditemukan.")
 
-    bot.reply_to(message, response)
-    insert_inbox_message(user_id, username, message_date, message_text, message_text)
-    insert_outbox_message(user_id, response)
+@bot.message_handler(commands=['cari_matkul'])
+def cari_matkul(m):
+    answer = "Masukkan nama mata kuliah yang ingin Anda cari:"
+    bot.send_message(m.chat.id, answer)
+    username = m.from_user.username
+    message = m.text
+    date = datetime.now()
+    inbox(username, message, date)
+    outbox(username, answer, date)
+    bot.register_next_step_handler(m, process_matkul_name_input)
 
-# Polling the bot
+def process_matkul_name_input(m):
+    matkul_name = m.text
+    mata_kuliah = get_matkul_by_name(matkul_name)
+    if mata_kuliah:
+        info_matkul = "\n".join([f"ID Matkul: {matkul[0]}\nNama Matkul: {matkul[1]}" for matkul in mata_kuliah])
+        bot.send_message(m.chat.id, info_matkul)
+    else:
+        bot.send_message(m.chat.id, "Maaf, mata kuliah dengan nama tersebut tidak ditemukan.")
+
+@bot.message_handler(commands=['start', 'hello'])
+def start(m):
+    answer ="Hello what can i do for you?, type /show_menu"
+    bot.send_message(m.chat.id, answer)
+    username = m.from_user.username
+    message = m.text
+    date = datetime.now()
+    inbox(username, message, date)
+    outbox(username, answer, date)
+
+@bot.message_handler(commands=['show_menu'])
+def handle_show_menu(m):
+    show_menu(m)
+
+@bot.message_handler(func=lambda message: True)
+def handle_menu(m):
+    option = m.text
+    data = get_data_from_database(option, m)
+    if data is not None:
+        bot.send_message(m.chat.id, data)
+
+def show_menu(m):
+    options = get_menu_options()
+    markup = types.ReplyKeyboardMarkup(row_width=1)
+    for option in options:
+        option_text = str(option[1]) 
+        markup.add(types.KeyboardButton(option_text)) 
+    bot.send_message(m.chat.id, "Pilih salah satu menu:", reply_markup=markup)
+    username = m.from_user.username
+    message = m.text
+    date = datetime.now()
+    inbox(username, message, date)
+    outbox(username, "Show menu", date)
+
+
+def get_menu_options():
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM menu_options")
+    options = cursor.fetchall()
+    conn.close()
+    return options
+
+def get_data_from_database(option, m):
+    if option == "cari_mhs":
+        cari_mahasiswa(m)
+        return None
+    elif option == "cari_matkul":
+        cari_matkul(m)
+        return None
+    else:
+        return "Maaf, perintah tidak dikenali."
+
 bot.polling()
-
-# @bot.message_handler(commands=['HaiGanteng'])
-# def greet(message):
-#     bot.reply_to(message, "Hey ada apa ganteng?")
-
-# bot.polling()
-
